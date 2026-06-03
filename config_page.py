@@ -6,7 +6,7 @@ def show():
     st.title("📊 MiniQuant 量化分析平台")
     st.markdown("### 1️⃣ 选择股票与策略参数")
 
-    # 从 session_state 读取上次配置
+    # ---------- 从 session_state 读取上次配置 ----------
     if 'config' in st.session_state:
         cfg = st.session_state.config
         default_symbol = cfg.get('symbol', '600519')
@@ -41,12 +41,29 @@ def show():
         default_hm_short = cfg.get('hm_short', (3,15))
         default_hm_long = cfg.get('hm_long', (20,60))
         default_hm_step = cfg.get('hm_step', 2)
-        # 策略优化选项默认值
         default_enable_trend_filter = cfg.get('enable_trend_filter', False)
         default_enable_volume_filter = cfg.get('enable_volume_filter', False)
         default_enable_dynamic_stop = cfg.get('enable_dynamic_stop', False)
         default_stop_loss_atr_mult = cfg.get('stop_loss_atr_mult', 2.0)
+        # 价值因子默认值
+        default_enable_value_filter = cfg.get('enable_value_filter', False)
+        default_value_logic = cfg.get('value_logic', 'AND')
+        default_enable_pe = cfg.get('enable_pe', True)
+        default_pe_max = cfg.get('pe_max', 20.0)
+        default_enable_pb = cfg.get('enable_pb', True)
+        default_pb_max = cfg.get('pb_max', 3.0)
+        default_enable_mcap = cfg.get('enable_mcap', True)
+        default_min_mcap = cfg.get('min_mcap', 100.0)
+        default_enable_roe = cfg.get('enable_roe', False)
+        default_min_roe = cfg.get('min_roe', 15.0)
+        default_enable_gpm = cfg.get('enable_gpm', False)
+        default_min_gpm = cfg.get('min_gpm', 20.0)
+        default_enable_npm = cfg.get('enable_npm', False)
+        default_min_npm = cfg.get('min_npm', 10.0)
+        default_enable_debt = cfg.get('enable_debt', False)
+        default_max_debt = cfg.get('max_debt', 60.0)
     else:
+        # 默认值
         default_symbol = '600519'
         default_start = pd.to_datetime("2022-01-01")
         default_end = pd.to_datetime("2024-12-31")
@@ -83,38 +100,97 @@ def show():
         default_enable_volume_filter = False
         default_enable_dynamic_stop = False
         default_stop_loss_atr_mult = 2.0
+        default_enable_value_filter = False
+        default_value_logic = 'AND'
+        default_enable_pe = True
+        default_pe_max = 20.0
+        default_enable_pb = True
+        default_pb_max = 3.0
+        default_enable_mcap = True
+        default_min_mcap = 100.0
+        default_enable_roe = False
+        default_min_roe = 15.0
+        default_enable_gpm = False
+        default_min_gpm = 20.0
+        default_enable_npm = False
+        default_min_npm = 10.0
+        default_enable_debt = False
+        default_max_debt = 60.0
+
+    # ---------- 热门股票快速选择 ----------
+    st.subheader("🔥 热门股票")
+    popular = {
+        "寒武纪": "688256", "澜起科技": "688008", "中际旭创": "300308", "海光信息": "688041",
+        "宁德时代": "300750", "贵州茅台": "600519", "紫金矿业": "601899", "威龙股份": "603779",
+        "达实智能": "002421", "京能电力": "600578", "天孚通信": "300502", "胜宏科技": "300476",
+        "北方华创": "002371"
+    }
+    cols = st.columns(3)
+    for i, (name, code) in enumerate(popular.items()):
+        with cols[i % 3]:
+            if st.button(name, key=f"pop_{code}"):
+                st.session_state['symbol'] = code
+
+    # 股票代码输入（使用 session_state 同步）
+    if 'symbol' not in st.session_state:
+        st.session_state['symbol'] = default_symbol
+    symbol = st.text_input("📈 股票代码", value=st.session_state['symbol'], help="6位数字A股代码").upper()
+    st.session_state['symbol'] = symbol
+
+    # 日期选择
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("📅 开始日期", value=default_start)
+    with col2:
+        end_date = st.date_input("📅 结束日期", value=default_end)
 
     # 策略选择（放在表单外实时更新）
     strategy = st.selectbox("选择主策略", ["双均线", "RSI策略", "布林带策略"],
                             index=["双均线", "RSI策略", "布林带策略"].index(default_strategy))
 
+    # 动态策略介绍
+    if strategy == "双均线":
+        st.info("""
+        **📖 双均线策略**  
+        - **原理**：短期均线上穿长期均线（金叉）买入，下穿（死叉）卖出。适用于有明显趋势的市场。  
+        - **参数**：短期均线（默认5日）和长期均线（默认20日）。缩短短期均线信号更灵敏，拉长长期均线可过滤噪音。  
+        - **适用场景**：单边上涨或下跌行情，震荡市可能频繁产生假信号。  
+        - **绩效特点**：趋势跟踪，能抓住大波段，但震荡期可能亏损。
+        """)
+    elif strategy == "RSI策略":
+        st.info("""
+        **📖 RSI 策略**  
+        - **原理**：相对强弱指数（RSI）低于超卖线时买入（预期反弹），高于超买线时卖出（预期回调）。适用于震荡行情。  
+        - **参数**：RSI周期（默认14）、超卖线（默认30）、超买线（默认70）。周期越短信号越敏感，强趋势中可放宽阈值。  
+        - **适用场景**：横盘震荡或温和波动市场，单边市中可能过早卖出或错过主升浪。  
+        - **绩效特点**：均值回归，胜率较高但单笔盈利有限。
+        """)
+    else:
+        st.info("""
+        **📖 布林带策略**  
+        - **原理**：价格触及下轨时买入（超卖反弹），触及上轨时卖出（超买回落）。适合波动率交易。  
+        - **参数**：布林带周期（默认20）、标准差倍数（默认2）。倍数越大通道越宽，触及概率越低。  
+        - **适用场景**：股价在区间内震荡时有效，突破趋势时可能反复止损。  
+        - **绩效特点**：低吸高抛，但容易在大趋势中踏空。
+        """)
+
     # 主策略参数控件
     if strategy == "双均线":
-        st.markdown("**📖 策略原理**：短期均线上穿长期均线（金叉）买入，下穿（死叉）卖出。")
         short_ma = st.slider("短期均线", 2, 50, default_short_ma)
         long_ma = st.slider("长期均线", 10, 200, default_long_ma)
         params = {'short_ma': short_ma, 'long_ma': long_ma}
     elif strategy == "RSI策略":
-        st.markdown("**📖 策略原理**：RSI低于超卖线买入，高于超买线卖出。")
         rsi_period_strat = st.slider("RSI周期", 5, 30, default_rsi_period_strat)
         rsi_os_strat = st.slider("买入阈值(RSI<)", 10, 40, default_rsi_os_strat)
         rsi_ob_strat = st.slider("卖出阈值(RSI>)", 60, 90, default_rsi_ob_strat)
         params = {'period': rsi_period_strat, 'oversold': rsi_os_strat, 'overbought': rsi_ob_strat}
     else:
-        st.markdown("**📖 策略原理**：价格触及下轨买入，触及上轨卖出。")
         bb_period_strat = st.slider("布林带周期", 10, 50, default_bb_period_strat)
         bb_std_strat = st.slider("标准差倍数", 1.0, 3.0, default_bb_std_strat, step=0.1)
         params = {'period': bb_period_strat, 'std_dev': bb_std_strat}
 
-    # 其他参数放在表单内
+    # ---------- 表单（所有需要提交的参数） ----------
     with st.form("config_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            symbol = st.text_input("📈 股票代码", value=default_symbol).upper()
-        with col2:
-            start_date = st.date_input("📅 开始日期", value=default_start)
-            end_date = st.date_input("📅 结束日期", value=default_end)
-
         st.subheader("📊 技术指标参数")
         ma_periods = st.multiselect("移动平均线周期", [5,10,20,30,60,120,250], default=default_ma_periods)
         bb_period = st.slider("布林带周期", 10, 50, default_bb_period)
@@ -138,17 +214,69 @@ def show():
         commission = st.number_input("手续费率", value=default_commission, format="%.4f")
         slippage = st.number_input("滑点", value=default_slippage, format="%.4f")
 
-        # 策略优化选项
         st.subheader("🛡️ 策略优化选项")
-        enable_trend_filter = st.checkbox("启用大盘趋势过滤", value=default_enable_trend_filter,
-                                          help="仅当沪深300指数在20日均线之上时才允许买入")
-        enable_volume_filter = st.checkbox("启用成交量确认", value=default_enable_volume_filter,
-                                           help="信号出现时，成交量需大于过去20日均量的1.5倍")
-        enable_dynamic_stop = st.checkbox("启用动态止损 (基于ATR)", value=default_enable_dynamic_stop,
-                                          help="根据平均真实波幅设置止损")
+        enable_trend_filter = st.checkbox("启用大盘趋势过滤", value=default_enable_trend_filter)
+        enable_volume_filter = st.checkbox("启用成交量确认", value=default_enable_volume_filter)
+        enable_dynamic_stop = st.checkbox("启用动态止损 (基于ATR)", value=default_enable_dynamic_stop)
         stop_loss_atr_mult = st.slider("ATR止损倍数", 1.0, 5.0, default_stop_loss_atr_mult, step=0.5,
                                        disabled=not enable_dynamic_stop)
 
+        # ---------- 价值因子过滤器 ----------
+        st.subheader("📊 价值因子过滤器 (开仓检查)")
+        enable_value_filter = st.checkbox("启用价值因子过滤", value=default_enable_value_filter)
+        if enable_value_filter:
+            value_logic = st.radio("条件逻辑", ["AND", "OR"], index=0 if default_value_logic=="AND" else 1)
+            st.markdown("**每日因子**")
+            col1, col2 = st.columns(2)
+            with col1:
+                enable_pe = st.checkbox("启用 PE", value=default_enable_pe)
+                if enable_pe:
+                    pe_max = st.number_input("PE ≤", value=default_pe_max, step=5.0)
+                else:
+                    pe_max = None
+            with col2:
+                enable_pb = st.checkbox("启用 PB", value=default_enable_pb)
+                if enable_pb:
+                    pb_max = st.number_input("PB ≤", value=default_pb_max, step=0.5)
+                else:
+                    pb_max = None
+            enable_mcap = st.checkbox("启用 总市值", value=default_enable_mcap)
+            if enable_mcap:
+                min_mcap = st.number_input("总市值 ≥ (亿元)", value=default_min_mcap, step=50.0)
+            else:
+                min_mcap = None
+
+            st.markdown("**季度因子 (需填充)**")
+            col1, col2 = st.columns(2)
+            with col1:
+                enable_roe = st.checkbox("启用 ROE", value=default_enable_roe)
+                if enable_roe:
+                    min_roe = st.number_input("ROE ≥ (%)", value=default_min_roe, step=5.0)
+                else:
+                    min_roe = None
+                enable_gpm = st.checkbox("启用 毛利率", value=default_enable_gpm)
+                if enable_gpm:
+                    min_gpm = st.number_input("毛利率 ≥ (%)", value=default_min_gpm, step=5.0)
+                else:
+                    min_gpm = None
+            with col2:
+                enable_npm = st.checkbox("启用 净利率", value=default_enable_npm)
+                if enable_npm:
+                    min_npm = st.number_input("净利率 ≥ (%)", value=default_min_npm, step=5.0)
+                else:
+                    min_npm = None
+                enable_debt = st.checkbox("启用 资产负债率", value=default_enable_debt)
+                if enable_debt:
+                    max_debt = st.number_input("资产负债率 ≤ (%)", value=default_max_debt, step=10.0)
+                else:
+                    max_debt = None
+        else:
+            # 未启用时，所有价值因子变量必须定义为 None，避免后续引用未定义
+            value_logic = 'AND'
+            enable_pe = enable_pb = enable_mcap = enable_roe = enable_gpm = enable_npm = enable_debt = False
+            pe_max = pb_max = min_mcap = min_roe = min_gpm = min_npm = max_debt = None
+
+        # ---------- 高级选项（多策略对比、热力图） ----------
         with st.expander("📈 高级选项（多策略对比、热力图）"):
             enable_compare = st.checkbox("启用多策略对比", value=default_enable_compare)
             compare_params = {}
@@ -179,26 +307,66 @@ def show():
             else:
                 hm_short = hm_long = hm_step = None
 
+        # 参数说明折叠面板（可选）
+        with st.expander("📖 参数说明与技巧", expanded=False):
+            st.markdown("""
+            **移动平均线 (MA)**：短期线上穿长期线（金叉）买入，下穿（死叉）卖出。
+            **RSI**：<30超卖，>70超买。周期越短信号越敏感。
+            **布林带**：价格触及下轨可能反弹，触及上轨可能回落。
+            **策略选择**：双均线适合趋势市，RSI适合震荡市，布林带适合波动率交易。
+            **热力图**：展示不同均线参数组合的夏普比率。
+            """)
+
         submitted = st.form_submit_button("🚀 开始分析", use_container_width=True)
 
         if submitted:
             st.session_state.config = {
-                'symbol': symbol, 'start_date': start_date, 'end_date': end_date,
-                'ma_periods': ma_periods, 'bb_period': bb_period, 'bb_std': bb_std,
+                'symbol': symbol,
+                'start_date': start_date,
+                'end_date': end_date,
+                'ma_periods': ma_periods,
+                'bb_period': bb_period,
+                'bb_std': bb_std,
                 'show_candlestick': show_candlestick,
-                'show_rsi': show_rsi, 'show_macd': show_macd, 'show_kdj': show_kdj,
-                'rsi_period': rsi_period, 'rsi_overbought': rsi_overbought, 'rsi_oversold': rsi_oversold,
-                'strategy': strategy, 'params': params,
-                'commission': commission, 'slippage': slippage,
-                'initial_capital': initial_capital, 'rebalance_freq': rebalance_freq_code,
+                'show_rsi': show_rsi,
+                'show_macd': show_macd,
+                'show_kdj': show_kdj,
+                'rsi_period': rsi_period,
+                'rsi_overbought': rsi_overbought,
+                'rsi_oversold': rsi_oversold,
+                'strategy': strategy,
+                'params': params,
+                'commission': commission,
+                'slippage': slippage,
+                'initial_capital': initial_capital,
+                'rebalance_freq': rebalance_freq_code,
                 'enable_trend_filter': enable_trend_filter,
                 'enable_volume_filter': enable_volume_filter,
                 'enable_dynamic_stop': enable_dynamic_stop,
                 'stop_loss_atr_mult': stop_loss_atr_mult if enable_dynamic_stop else None,
-                'enable_compare': enable_compare, 'compare_strategies': compare_strategies,
+                'enable_value_filter': enable_value_filter,
+                'value_logic': value_logic,
+                'enable_pe': enable_pe,
+                'pe_max': pe_max,
+                'enable_pb': enable_pb,
+                'pb_max': pb_max,
+                'enable_mcap': enable_mcap,
+                'min_mcap': min_mcap,
+                'enable_roe': enable_roe,
+                'min_roe': min_roe,
+                'enable_gpm': enable_gpm,
+                'min_gpm': min_gpm,
+                'enable_npm': enable_npm,
+                'min_npm': min_npm,
+                'enable_debt': enable_debt,
+                'max_debt': max_debt,
+                'enable_compare': enable_compare,
+                'compare_strategies': compare_strategies,
                 'compare_params': compare_params,
                 'enable_heatmap': enable_heatmap,
-                'hm_short': hm_short, 'hm_long': hm_long, 'hm_step': hm_step
+                'hm_short': hm_short,
+                'hm_long': hm_long,
+                'hm_step': hm_step
             }
             st.session_state.page = 'result'
             st.rerun()

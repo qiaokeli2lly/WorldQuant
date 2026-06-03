@@ -1,4 +1,4 @@
-# result_page.py (修正版)
+# result_page.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,7 +9,7 @@ from indicators import compute_all_indicators
 from backtest import run_backtest, calculate_metrics, multi_strategy_backtest
 from strategies import ma_strategy, rsi_strategy, bollinger_strategy
 from plot_charts import plot_equity_curve
-from fundamental import get_fundamental
+from fundamental import get_fundamental_single as get_fundamental, get_value_factors
 from plot_utils import plot_candlestick_with_indicators, plot_rsi, plot_macd, plot_kdj
 from explain_utils import (
     indicator_glossary, explain_signal, explain_pe, explain_pb,
@@ -52,7 +52,7 @@ def show():
             df['D'] = df['K'].ewm(span=3, adjust=False).mean()
             df['J'] = 3 * df['K'] - 2 * df['D']
 
-        # 添加交易日标识（用于单日查看器）
+        # 交易日标识
         df['is_trading_day'] = (df['volume'] > 0) & (df['return'].notna())
 
         # 预计算主策略所需指标
@@ -107,6 +107,55 @@ def show():
         else:
             df_strat = bollinger_strategy(df, main_params['period'], main_params['std_dev'])
 
+        # 价值因子开仓检查
+        if config.get('enable_value_filter', False):
+            with st.spinner("正在获取价值因子数据..."):
+                try:
+                    value_df = get_value_factors(symbol, start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d'))
+                    # 对齐到 df 索引
+                    value_df = value_df.reindex(df.index, method='ffill')
+                    # 构建条件列表
+                    conditions = []
+                    if config.get('enable_pe', False) and 'PE' in value_df.columns:
+                        conditions.append(value_df['PE'] <= config['pe_max'])
+                    if config.get('enable_pb', False) and 'PB' in value_df.columns:
+                        conditions.append(value_df['PB'] <= config['pb_max'])
+                    if config.get('enable_mcap', False) and '市值(亿)' in value_df.columns:
+                        conditions.append(value_df['市值(亿)'] >= config['min_mcap'])
+                    if config.get('enable_roe', False) and 'ROE' in value_df.columns:
+                        conditions.append(value_df['ROE'] >= config['min_roe'])
+                    if config.get('enable_gpm', False) and '毛利率' in value_df.columns:
+                        conditions.append(value_df['毛利率'] >= config['min_gpm'])
+                    if config.get('enable_npm', False) and '净利率' in value_df.columns:
+                        conditions.append(value_df['净利率'] >= config['min_npm'])
+                    if config.get('enable_debt', False) and '资产负债率' in value_df.columns:
+                        conditions.append(value_df['资产负债率'] <= config['max_debt'])
+                    if not conditions:
+                        st.warning("未启用任何价值因子，跳过过滤")
+                    else:
+                        if config['value_logic'] == 'AND':
+                            value_ok = pd.concat(conditions, axis=1).all(axis=1)
+                        else:
+                            value_ok = pd.concat(conditions, axis=1).any(axis=1)
+                        # 仅对买入信号当天检查
+                        buy_signals = (df_strat['signal'] == 1)
+                        # 不满足价值条件的买入信号置为0
+                        df_strat.loc[buy_signals & ~value_ok, 'signal'] = 0
+                        # 重新计算 position（基于修改后的 signal）
+                        # 简单循环重建 position
+                        position = 0
+                        pos_list = []
+                        for idx, row in df_strat.iterrows():
+                            if row['signal'] == 1:
+                                position = 1
+                            elif row['signal'] == -1:
+                                position = 0
+                            pos_list.append(position)
+                        df_strat['position'] = pos_list
+                        # 重新计算 signal 的 diff（可选，但已经手动处理了，无需）
+                except Exception as e:
+                    st.warning(f"价值因子数据获取失败，已跳过过滤: {e}")
+
         # 应用趋势过滤
         if config.get('enable_trend_filter', False):
             df_strat['position'] = df_strat['position'] * idx_signal.astype(int)
@@ -145,7 +194,7 @@ def show():
         col2.metric("涨跌幅", f"{(latest['close']/df.iloc[-2]['close']-1)*100:.2f}%")
         col3.metric("成交量(手)", f"{latest['volume']:.0f}")
 
-        # 基本面数据
+        # 基本面数据（展示用）
         with st.expander("📊 基本面数据（最新一期）", expanded=False):
             with st.spinner("加载中..."):
                 fund = get_fundamental(symbol)
