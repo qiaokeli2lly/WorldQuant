@@ -1,3 +1,4 @@
+# fundamental.py (完整版)
 import os
 import json
 import pandas as pd
@@ -47,6 +48,7 @@ def safe_float(val):
     except:
         return None
 
+# ================== 单股票最新基本面（用于展示） ==================
 def get_fundamental_single(symbol):
     if pro is None:
         return None
@@ -105,7 +107,71 @@ def get_fundamental_single(symbol):
     save_cache(symbol, "latest", result)
     return result
 
+# ================== 批量获取指定日期的估值（用于多因子回测） ==================
+def get_fundamental_batch(symbols, trade_date):
+    """
+    批量获取指定日期所有股票的 PE、PB、总市值（万元）
+    symbols: 列表，如 ['600519', '000858']
+    trade_date: 'YYYYMMDD' 字符串
+    返回字典 { symbol: {'PE':..., 'PB':..., '市值(亿)':...} }
+    """
+    if pro is None:
+        return {}
+    ensure_cache_dir()
+    result = {}
+    missing = []
+    for sym in symbols:
+        cached = load_cache(sym, trade_date)
+        if cached is not None:
+            result[sym] = cached
+        else:
+            missing.append(sym)
+    if not missing:
+        return result
+
+    ts_codes = []
+    for sym in missing:
+        if sym.startswith('6'):
+            ts_codes.append(f"{sym}.SH")
+        else:
+            ts_codes.append(f"{sym}.SZ")
+    ts_code_str = ','.join(ts_codes)
+    try:
+        df = pro.daily_basic(ts_code=ts_code_str, trade_date=trade_date, fields='ts_code,pe_ttm,pb,total_mv')
+        if df.empty:
+            # 尝试向前查找最近交易日
+            for offset in range(1, 10):
+                test_date = (pd.to_datetime(trade_date) - timedelta(days=offset)).strftime('%Y%m%d')
+                df = pro.daily_basic(ts_code=ts_code_str, trade_date=test_date, fields='ts_code,pe_ttm,pb,total_mv')
+                if not df.empty:
+                    print(f"向前找到有效交易日: {test_date}")
+                    break
+        if df.empty:
+            print(f"警告: 未找到 {trade_date} 及其附近的有效估值数据")
+            return result
+        for _, row in df.iterrows():
+            ts_code = row['ts_code']
+            sym = ts_code.split('.')[0]
+            pe = safe_float(row.get('pe_ttm'))
+            pb = safe_float(row.get('pb'))
+            total_mv = safe_float(row.get('total_mv'))
+            data = {
+                'PE': round(pe, 2) if pe else None,
+                'PB': round(pb, 2) if pb else None,
+                '市值(亿)': round(total_mv / 10000, 2) if total_mv else None
+            }
+            result[sym] = data
+            save_cache(sym, trade_date, data)
+    except Exception as e:
+        print(f"批量获取基本面失败: {e}")
+    return result
+
+# ================== 历史价值因子序列（用于回测过滤和图表） ==================
 def get_value_factors(symbol, start_date, end_date):
+    """
+    获取股票在日期范围内的每日价值因子序列
+    返回 DataFrame，索引为日期，列包括：PE, PB, 市值(亿), ROE, 毛利率, 净利率, 资产负债率
+    """
     if pro is None:
         raise ValueError("Tushare 未初始化")
     ensure_cache_dir()
@@ -113,10 +179,10 @@ def get_value_factors(symbol, start_date, end_date):
     if is_cache_valid(symbol, cache_key, hours=12):
         data = load_cache(symbol, cache_key)
         if data is not None:
-            # 从缓存恢复 DataFrame
-            df = pd.DataFrame(data).T
-            df.index = pd.to_datetime(df.index, format='%Y-%m-%d')
-            return df.sort_index()
+            df = pd.DataFrame(data)
+            df.index = pd.to_datetime(df.index)
+            df.sort_index(inplace=True)
+            return df
 
     ts_code = f"{symbol}.SH" if symbol.startswith('6') else f"{symbol}.SZ"
     start = pd.to_datetime(start_date)
@@ -142,6 +208,7 @@ def get_value_factors(symbol, start_date, end_date):
     df_daily['市值(亿)'] = df_daily['市值(元)'] / 1e8
     df_daily = df_daily[['PE', 'PB', '市值(亿)']]
 
+    # 季度因子
     quarters = []
     current = end
     for _ in range(8):
