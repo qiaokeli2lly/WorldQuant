@@ -1,4 +1,4 @@
-# fundamental.py (完整版)
+# data/fundamental.py
 import os
 import json
 import pandas as pd
@@ -38,8 +38,17 @@ def load_cache(symbol, cache_key):
     cache_file = get_cache_file(symbol, cache_key)
     try:
         with open(cache_file, 'r') as f:
-            return json.load(f)
-    except:
+            data = json.load(f)
+        # 验证缓存格式：至少有一个键，且所有键都能被解析为日期
+        if not data:
+            raise ValueError("空缓存")
+        for k in data.keys():
+            pd.to_datetime(k)  # 尝试转换，失败则抛异常
+        return data
+    except Exception:
+        # 缓存损坏，删除文件并返回 None，下次调用会重新获取
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
         return None
 
 def safe_float(val):
@@ -173,7 +182,9 @@ def get_value_factors(symbol, start_date, end_date):
     返回 DataFrame，索引为日期，列包括：PE, PB, 市值(亿), ROE, 毛利率, 净利率, 资产负债率
     """
     if pro is None:
-        raise ValueError("Tushare 未初始化")
+        print("警告: Tushare 未初始化，无法获取价值因子序列")
+        return pd.DataFrame()
+
     ensure_cache_dir()
     cache_key = f"value_{start_date}_{end_date}"
     if is_cache_valid(symbol, cache_key, hours=12):
@@ -257,6 +268,7 @@ def get_value_factors(symbol, start_date, end_date):
 
     combined = df_daily.join(df_quarter_full, how='left')
     combined.ffill(inplace=True)
+    # 保存缓存：将索引转换为字符串格式，避免 JSON 序列化问题
     result_dict = combined.to_dict(orient='index')
     save_cache(symbol, cache_key, {k.strftime('%Y-%m-%d'): v for k, v in result_dict.items()})
     return combined

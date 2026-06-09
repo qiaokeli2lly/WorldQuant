@@ -1,4 +1,4 @@
-# config_page.py
+# pages/config_page.py
 import streamlit as st
 import pandas as pd
 
@@ -62,7 +62,7 @@ def show():
         default_enable_debt = cfg.get('enable_debt', False)
         default_max_debt = cfg.get('max_debt', 60.0)
     else:
-        # 默认值（保留原有默认值）
+        # 默认值
         default_symbol = '600519'
         default_start = pd.to_datetime("2022-01-01")
         default_end = pd.to_datetime("2024-12-31")
@@ -135,7 +135,7 @@ def show():
     symbol = st.text_input("📈 股票代码", value=st.session_state['symbol']).upper()
     st.session_state['symbol'] = symbol
 
-    # 日期选择（之后紧挨着参数说明折叠面板）
+    # 日期选择
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("📅 开始日期", value=default_start)
@@ -144,7 +144,7 @@ def show():
         end_date = st.date_input("📅 结束日期", value=default_end)
         st.caption("回测结束日，通常设为最近一个交易日。")
 
-    # ---------- 参数说明与技巧折叠面板（移到日期后面）----------
+    # ---------- 参数说明与技巧折叠面板 ----------
     with st.expander("📖 参数说明与技巧（点击展开）", expanded=False):
         st.markdown("""
         ### 🎯 策略选择
@@ -217,12 +217,25 @@ def show():
         - 可以帮助您快速找到最优参数，但注意过拟合风险（不要只盯着历史最优）。
         """)
 
-    # 策略选择
-    strategy = st.selectbox("选择主策略", ["双均线", "RSI策略", "布林带策略"],
-                            index=["双均线", "RSI策略", "布林带策略"].index(default_strategy))
-    st.caption("不同策略适合不同市场：双均线追趋势，RSI抓震荡，布林带做区间。")
+    # 策略选择（增加场景化描述）
+    strategy = st.selectbox(
+        "选择主策略",
+        ["双均线", "RSI策略", "布林带策略"],
+        index=["双均线", "RSI策略", "布林带策略"].index(default_strategy),
+        help="根据股票走势选择：**趋势明显选双均线，震荡行情选RSI，波动规律选布林带**。"
+    )
+    # 策略适用场景提示
+    if strategy == "双均线":
+        st.info("📈 **双均线**：适合有**明显涨跌趋势**的股票。金叉买，死叉卖。\n"
+                "⚠️ 震荡市会频繁假信号，来回亏损。")
+    elif strategy == "RSI策略":
+        st.info("📊 **RSI策略**：适合**横盘震荡**的股票。超卖买，超买卖。\n"
+                "⚠️ 单边牛市会过早卖出，踏空行情。")
+    else:
+        st.info("📐 **布林带**：适合**波动规律**的股票。下轨买，上轨卖。\n"
+                "⚠️ 股价突破轨道时可能反复止损。")
 
-    # 主策略参数控件（直接显示解释）
+    # 主策略参数控件
     if strategy == "双均线":
         st.markdown("**📖 策略原理**：短期均线上穿长期均线（金叉）买入，下穿（死叉）卖出。")
         short_ma = st.slider("短期均线", 2, 50, default_short_ma)
@@ -278,31 +291,55 @@ def show():
         initial_capital = st.number_input("初始资金(元)", value=default_initial_capital, step=10000)
         st.caption("回测起始资金，默认10万元。")
         rebalance_freq = st.selectbox("调仓频率", ["每日", "每周", "每月"], index=["每日","每周","每月"].index({ 'D':'每日', 'W':'每周', 'M':'每月' }[default_rebalance_freq]))
-        st.caption("调仓频率越高越能快速反应市场变化，但交易成本也越高。")
+        # 调仓频率成本提示
+        if rebalance_freq == "每日":
+            st.warning("⚠️ 每日调仓交易次数多（年约250次），**手续费和滑点会大幅侵蚀利润**。实盘建议至少设0.1%手续费。")
+        elif rebalance_freq == "每周":
+            st.info("💡 每周调仓年约50次，平衡了反应速度和交易成本。")
         freq_map = {"每日": "D", "每周": "W", "每月": "M"}
         rebalance_freq_code = freq_map[rebalance_freq]
-        commission = st.number_input("手续费率", value=default_commission, format="%.4f")
+        commission = st.number_input("手续费率", value=default_commission, format="%.4f",
+                                     help="单边交易成本。实盘通常0.001~0.003（万分之一到万分之三）。")
+        if commission < 0.001 and rebalance_freq == "每日":
+            st.warning("⚠️ 你设的手续费率偏低，实盘成本可能更高，回测结果会偏乐观。建议至少设0.001。")
         st.caption("单边交易成本，例如0.001代表0.1%。实盘务必设置。")
-        slippage = st.number_input("滑点", value=default_slippage, format="%.4f")
-        st.caption("因流动性导致的成交价差，通常设为0.05%~0.1%。")
+        slippage = st.number_input("滑点", value=default_slippage, format="%.4f",
+                                   help="因流动性导致的成交价差，实盘通常0.0005~0.002。")
+        st.caption("因流动性导致的成交价差，通常设为0.05%~0.2%。")
 
         st.subheader("🛡️ 策略优化选项")
         enable_trend_filter = st.checkbox("启用大盘趋势过滤", value=default_enable_trend_filter)
         st.caption("只在沪深300指数20日均线之上时交易。牛市赚钱，熊市空仓。")
+        if enable_trend_filter:
+            st.info("💡 开启后，**熊市期间策略会空仓**，净值走平。若回测期包含熊市，交易次数会很少。")
         enable_volume_filter = st.checkbox("启用成交量确认", value=default_enable_volume_filter)
         st.caption("信号出现时，成交量需大于过去20日均量的1.5倍，可过滤假信号。")
         enable_dynamic_stop = st.checkbox("启用动态止损 (基于ATR)", value=default_enable_dynamic_stop)
         st.caption("根据波动率自动调整止损距离，比固定百分比更科学。")
+        if enable_dynamic_stop:
+            st.info("💡 ATR是14天平均真实波幅，**倍数越大越能容忍波动**（不易被震出），但止损距离更远。")
         stop_loss_atr_mult = st.slider("ATR止损倍数", 1.0, 5.0, default_stop_loss_atr_mult, step=0.5,
                                        disabled=not enable_dynamic_stop)
-        st.caption("倍数越小越容易止损，倍数越大越能容忍波动。")
+        st.caption("倍数越小越容易止损，倍数越大越能容忍波动。建议2~3。")
 
-        # 价值因子过滤器
+        # 价值因子过滤器（增加当前估值提示）
         st.subheader("📊 价值因子过滤器 (开仓检查)")
         st.info("💡 提示：价值因子数据（PE、PB、ROE等）将在分析后以图表和数值形式展示。您可以在下方设置过滤条件，系统会在开仓时检查是否满足条件。")
         enable_value_filter = st.checkbox("启用价值因子过滤", value=default_enable_value_filter)
         st.caption("只在估值合理（如PE<20）且盈利质量高时买入，避免追高。但牛市中可能踏空。")
         if enable_value_filter:
+            # 尝试获取当前估值数据（如果已经在session中）
+            current_pe = None
+            current_pb = None
+            if 'latest_fundamental' in st.session_state:
+                fund = st.session_state.latest_fundamental
+                current_pe = fund.get('PE')
+                current_pb = fund.get('PB')
+            if current_pe is not None or current_pb is not None:
+                st.info(f"📊 当前估值参考：PE={current_pe} | PB={current_pb}（基于最新数据）")
+            else:
+                st.caption("💡 运行分析后将显示当前股票的PE/PB，帮助您设定合理的阈值。")
+            
             value_logic = st.radio("条件逻辑", ["AND", "OR"], index=0 if default_value_logic=="AND" else 1)
             st.caption("AND：所有启用因子必须同时满足；OR：任一满足即可。")
             st.markdown("**每日因子**")
@@ -311,11 +348,17 @@ def show():
                 enable_pe = st.checkbox("启用 PE", value=default_enable_pe)
                 st.caption("市盈率，越低越便宜。")
                 pe_max = st.number_input("PE ≤", value=default_pe_max, step=5.0, disabled=not enable_pe)
+                if enable_pe and current_pe is not None:
+                    if pe_max < current_pe:
+                        st.warning(f"⚠️ 当前PE={current_pe}，你设的PE≤{pe_max}比现价严格，**可能导致策略长期空仓**。")
                 st.caption("建议：价值股15-20，成长股25-30。设置过低可能错过机会。")
             with col2:
                 enable_pb = st.checkbox("启用 PB", value=default_enable_pb)
                 st.caption("市净率，越低表示资产估值越便宜。")
                 pb_max = st.number_input("PB ≤", value=default_pb_max, step=0.5, disabled=not enable_pb)
+                if enable_pb and current_pb is not None:
+                    if pb_max < current_pb:
+                        st.warning(f"⚠️ 当前PB={current_pb}，你设的PB≤{pb_max}比现价严格，**可能导致策略长期空仓**。")
                 st.caption("常见阈值：银行股<1，消费股<5。")
             enable_mcap = st.checkbox("启用 总市值", value=default_enable_mcap)
             st.caption("总市值（亿元），用于过滤小盘股（防流动性风险）或大盘股。")
