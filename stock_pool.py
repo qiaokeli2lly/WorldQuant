@@ -1,7 +1,6 @@
-# stock_pool.py
+# utils/stock_pool.py
 def get_predefined_pool(name='demo'):
     if name == 'demo':
-        # 50只流动性好、覆盖各行业的龙头股（示例列表，可按需调整）
         return [
             '600519', '000858', '601318', '600036', '000333',
             '002415', '300750', '601888', '600900', '601166',
@@ -15,7 +14,17 @@ def get_predefined_pool(name='demo'):
             '600438', '002460', '300274', '600406', '002916'
         ]
     elif name == 'hs300':
-        # 可扩展动态获取，先返回demo池
         return get_predefined_pool('demo')
+    elif name == 'us_top20':
+        return [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
+            'TSLA', 'META', 'TSM', 'BABA', 'PDD',
+            'NTES', 'JD', 'BIDU', 'NIO', 'LI',
+            'XPEV', 'PLTR', 'AMD', 'KO', 'DIS'
+        ]
+    elif name == 'a_us_mixed':
+        a_pool = get_predefined_pool('demo')[:30]
+        us_pool = get_predefined_pool('us_top20')
+        return a_pool + us_pool
     else:
         raise ValueError("Unknown pool")

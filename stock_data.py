@@ -11,6 +11,11 @@ MAX_RETRIES = 3
 BACKOFF_BASE = 2
 
 def get_stock_data(symbol, start_date, end_date, cache_dir="data_cache", max_retries=MAX_RETRIES):
+   
+    # ★ 新增：判断美股（纯字母）或 A 股（6位数字）
+    if symbol.isalpha():
+        from data.us_stock_data import get_us_stock_data
+        return get_us_stock_data(symbol, start_date, end_date)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     cache_path = os.path.join(script_dir, cache_dir)
     if not os.path.exists(cache_path):

@@ -1,114 +1,151 @@
-# intelligence/analyzer.py
 import json
 from datetime import datetime, timedelta
-from .data_sources import get_news, get_announcements, get_moneyflow, get_concept
-from .llm_gateway import LLMGateway
-from .prompts import SYSTEM_PROMPT, build_user_prompt
+from typing import List, Optional
+from pydantic import BaseModel
+from difflib import SequenceMatcher
 
+from .data_sources import get_all_news_concurrent, get_moneyflow, get_concept
+from .context import get_quant_snapshot, get_industry_bg
+from .llm_gateway import LLMGateway
+from .prompts import SYSTEM_PROMPT_ENHANCED, build_user_prompt_enhanced
+from data.fundamental import get_fundamental_single
+
+# ---------- Pydantic 模型 ----------
+class LogicItem(BaseModel):
+    event: str
+    impact: str
+    reason: str
+
+class AnalysisOutput(BaseModel):
+    trend: str
+    confidence: float
+    score: float
+    logic_chain: List[LogicItem]
+    key_risks: List[str]
+
+# ---------- 模型降级链 ----------
 MODEL_FALLBACK_CHAIN = {
     'deepseek': ['deepseek', 'qwen', 'ollama'],
     'qwen': ['qwen', 'ollama'],
     'ollama': ['ollama']
 }
 
-def _fetch_news_and_announcements(symbol):
-    """
-    智能获取新闻和公告：先拉取近30天数据，若条数少于3条则扩大到365天。
-    返回 (news_df, announcements_df, actual_start_date_str)
-    """
-    end_date = datetime.now().strftime('%Y%m%d')
-    # 第一阶段：近30天
-    start_date_30 = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
-    news_df = get_news(symbol, start_date_30, end_date)
-    announcements_df = get_announcements(symbol, start_date_30, end_date)
+# ---------- 简单去重（标题相似度 > 0.8 视为重复）----------
+def deduplicate_news(news_df):
+    if news_df.empty:
+        return news_df
+    titles = news_df['title'].tolist()
+    keep = []
+    for i, row in news_df.iterrows():
+        dup = False
+        for j in keep:
+            if SequenceMatcher(None, titles[i], titles[news_df.index[j]]).ratio() > 0.8:
+                dup = True
+                break
+        if not dup:
+            keep.append(i)
+    return news_df.loc[keep]
 
-    # 判断是否需要扩大范围（新闻+公告总条数 < 3）
-    total_items = (len(news_df) if not news_df.empty else 0) + (len(announcements_df) if not announcements_df.empty else 0)
-    if total_items < 3:
-        start_date_365 = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')
-        news_df = get_news(symbol, start_date_365, end_date)
-        announcements_df = get_announcements(symbol, start_date_365, end_date)
-        return news_df, announcements_df, start_date_365
-    return news_df, announcements_df, start_date_30
+# ---------- 主分析函数 ----------
+def analyze_stock(symbol, stock_name="", model='deepseek', manual_news=""):
+    # 1. 量化上下文
+    quant_snap = get_quant_snapshot(symbol)
+    industry = get_industry_bg(symbol)
 
+    # 2. 多源新闻 + 去重
+    news_df = get_all_news_concurrent(symbol, limit_per_source=10, max_total=30)
+    news_df = deduplicate_news(news_df)
 
-def analyze_stock(symbol, stock_name="", model='deepseek'):
-    end_date = datetime.now().strftime('%Y%m%d')
+    # 3. 整理文本
+    if not news_df.empty:
+        news_text = "\n".join([f"[{row['source']}] {row['title']} {row.get('content','')[:100]}"
+                               for _, row in news_df.iterrows()])
+    else:
+        news_text = "无"
+    if manual_news.strip():
+        news_text += "\n【手动补充】\n" + manual_news
 
-    # ----- 获取新闻和公告（智能扩大时间范围）-----
-    news_df, announcements_df, actual_start = _fetch_news_and_announcements(symbol)
-
-    # ----- 获取其他数据 -----
-    concepts = get_concept(symbol)
-    moneyflow_df = get_moneyflow(symbol, actual_start, end_date)
-
-    news_text = "\n".join(news_df['title'].tolist()) if not news_df.empty else "无"
-    announcements_text = "\n".join(announcements_df['title'].tolist()) if not announcements_df.empty else "无"
-    moneyflow_text = "无数据"
-    if not moneyflow_df.empty and 'buy_elg_amount' in moneyflow_df.columns:
-        total_buy = moneyflow_df['buy_elg_amount'].sum()
-        moneyflow_text = f"近一年主力净买入(超大单): {total_buy:.2f}万元"  # 若范围扩大，说明
-
-    from data.fundamental import get_fundamental_single
+    # 4. 基本面
     fund = get_fundamental_single(symbol)
     fundamentals_text = str(fund) if fund else "无"
 
-    raw_data = {
-        "fundamentals": fundamentals_text,
-        "news_titles": news_text,
-        "announcements_titles": announcements_text,
-        "concepts": concepts,
-        "moneyflow": moneyflow_text,
-        "data_period": f"数据获取范围：{actual_start} 至 {end_date}"
-    }
+    # 5. 构建 prompt
+    system_prompt = SYSTEM_PROMPT_ENHANCED.format(
+        quant_snapshot=quant_snap,
+        industry_bg=industry
+    )
+    user_prompt = build_user_prompt_enhanced(news_text, stock_name or symbol, fundamentals_text)
 
-    user_prompt = build_user_prompt(stock_name or symbol, fundamentals_text,
-                                    news_text, announcements_text, concepts, moneyflow_text)
-
+    # 6. 调用模型 + 降级
     models_to_try = MODEL_FALLBACK_CHAIN.get(model, [model])
     last_error = None
+    raw_data = {
+        'fundamentals': fundamentals_text,
+        'news_df': news_df,
+        'news_count': len(news_df),
+        'quant_snapshot': quant_snap,
+        'industry_bg': industry,
+        'concepts': get_concept(symbol),
+        'moneyflow': _get_moneyflow_text(symbol)
+    }
 
     for m in models_to_try:
         try:
             gateway = LLMGateway(m)
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
             result_text = gateway.chat(messages)
-            original_text = result_text
 
-            # 尝试解析 JSON
-            analysis = None
-            try:
-                analysis = json.loads(result_text)
-            except json.JSONDecodeError:
-                start = result_text.find('{')
-                end = result_text.rfind('}')
-                if start != -1 and end != -1 and end > start:
-                    try:
-                        analysis = json.loads(result_text[start:end+1])
-                    except:
-                        pass
+            # 7. 清理并解析 JSON
+            cleaned = result_text.strip()
+            if cleaned.startswith("```json"):
+                cleaned = cleaned[7:]
+            elif cleaned.startswith("```"):
+                cleaned = cleaned[3:]
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
 
-            if analysis is None:
-                return {
-                    "error": f"模型返回格式不正确，无法解析。原始输出: {original_text[:300]}",
-                    "raw_output": original_text,
-                    "raw_data": raw_data
-                }
+            # 提取第一个 JSON 对象
+            start = cleaned.find('{')
+            end = cleaned.rfind('}') + 1
+            if start != -1 and end > start:
+                cleaned = cleaned[start:end]
 
-            analysis['used_model'] = m
+            analysis_dict = json.loads(cleaned)
+
+            # 8. Pydantic 校验
+            analysis = AnalysisOutput(**analysis_dict)
+
+            # 9. 构造返回结果
+            result = analysis.dict()
+            result['used_model'] = m
             if m != model:
-                analysis['fallback'] = True
-            analysis['raw_data'] = raw_data
-            return analysis
+                result['fallback'] = True
+            result['raw_data'] = raw_data
+            return result
 
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            last_error = e
+            continue
         except Exception as e:
             last_error = e
             continue
 
+    # 所有模型失败
     return {
         "error": f"所有模型调用失败。最后错误: {last_error}",
         "raw_data": raw_data
     }
+
+def _get_moneyflow_text(symbol):
+    try:
+        df = get_moneyflow(symbol,
+                           (datetime.now() - timedelta(days=30)).strftime('%Y%m%d'),
+                           datetime.now().strftime('%Y%m%d'))
+        if not df.empty and 'buy_elg_amount' in df.columns:
+            return f"近一月主力净买入(超大单): {df['buy_elg_amount'].sum():.2f}万元"
+    except:
+        pass
+    return "无数据"
