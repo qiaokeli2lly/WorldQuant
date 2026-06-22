@@ -95,3 +95,39 @@ def query_articles(symbol, limit=15):
 
 if __name__ == "__main__":
     init_db()
+# 在 intelligence/local_db.py 末尾追加
+
+def init_sentiment_table():
+    """创建情感缓存表（如果不存在）"""
+    conn = get_connection()
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS sentiment_cache (
+            symbol TEXT NOT NULL,
+            date TEXT NOT NULL,
+            score REAL,
+            PRIMARY KEY (symbol, date)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_sentiment(symbol, date, score):
+    """保存或更新某股票某日的情感得分"""
+    conn = get_connection()
+    conn.execute('''
+        INSERT OR REPLACE INTO sentiment_cache (symbol, date, score)
+        VALUES (?, ?, ?)
+    ''', (symbol, date, score))
+    conn.commit()
+    conn.close()
+
+def get_sentiment(symbol, date):
+    """查询某股票某日的情感得分，若无返回 None"""
+    conn = get_connection()
+    cur = conn.execute(
+        'SELECT score FROM sentiment_cache WHERE symbol=? AND date=?',
+        (symbol, date)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None

@@ -15,6 +15,9 @@ from deep_translator import GoogleTranslator
 
 # ---------- 通用工具 ----------
 def convert_code(symbol):
+    """A股代码转 Tushare 格式，美股返回 None"""
+    if symbol.isalpha():
+        return None
     if symbol.startswith('6'):
         return f"{symbol}.SH"
     else:
@@ -43,63 +46,37 @@ def _safe_request(url, headers, timeout=10, retries=2):
                 return None
     return None
 
-# ---------- Tushare 接口（保留，可能无权限）----------
-def get_news(symbol, start_date, end_date, limit=20):
+# ---------- Tushare 新闻接口 ----------
+def fetch_tushare_news(symbol, limit=15):
+    """从 Tushare 获取 A 股新闻（免费，不限次）"""
     pro = ts.pro_api()
     try:
-        df = pro.news(ts_code=convert_code(symbol),
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
+        ts_code = convert_code(symbol)
+        if ts_code is None:
+            return pd.DataFrame()
+        df = pro.news(ts_code=ts_code,
                       start_date=start_date,
                       end_date=end_date,
                       limit=limit)
         if df is not None and not df.empty:
-            if 'content' in df.columns:
-                df['content'] = df['content'].fillna(df['title'])
-            else:
-                df['content'] = df['title']
             df['source'] = 'Tushare'
+            if 'headline' in df.columns:
+                df = df.rename(columns={'headline': 'title'})
+            if 'content' not in df.columns:
+                df['content'] = ''
+            df['content'] = df['content'].fillna('')
             return df[['title', 'content', 'source']]
         return pd.DataFrame()
     except Exception as e:
         print(f"Tushare新闻获取失败: {e}")
         return pd.DataFrame()
 
-def get_announcements(symbol, start_date, end_date, limit=10):
-    pro = ts.pro_api()
-    try:
-        df = pro.disclosure(ts_code=convert_code(symbol),
-                            start_date=start_date,
-                            end_date=end_date,
-                            limit=limit)
-        if df is not None and not df.empty:
-            df['source'] = 'Tushare公告'
-            return df[['ann_date', 'title', 'source']]
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"公告获取失败: {e}")
-        return pd.DataFrame()
-
-def get_moneyflow(symbol, start_date, end_date):
-    pro = ts.pro_api()
-    try:
-        df = pro.moneyflow(ts_code=convert_code(symbol),
-                           start_date=start_date,
-                           end_date=end_date)
-        return df if not df.empty else pd.DataFrame()
-    except:
-        return pd.DataFrame()
-
-def get_concept(symbol):
-    pro = ts.pro_api()
-    try:
-        df = pro.concept_detail(ts_code=convert_code(symbol))
-        if df is not None and not df.empty:
-            return df['concept_name'].tolist()
-        return []
-    except:
-        return []
-
 # ---------- 雪球 ----------
 def fetch_xueqiu(symbol, limit=15):
+    if symbol.isalpha():
+        return pd.DataFrame()
     if symbol.startswith('6'):
         xq_code = f"SH{symbol}"
     else:
@@ -145,6 +122,8 @@ def fetch_xueqiu(symbol, limit=15):
 
 # ---------- 巨潮公告 ----------
 def fetch_cninfo_announcements(symbol, limit=10):
+    if symbol.isalpha():
+        return pd.DataFrame()
     if symbol.startswith('6'):
         secode = f"{symbol}.SH"
     else:
@@ -173,6 +152,8 @@ def fetch_cninfo_announcements(symbol, limit=10):
 
 # ---------- 东方财富 ----------
 def fetch_eastmoney(symbol, limit=8):
+    if symbol.isalpha():
+        return pd.DataFrame()
     url = f"https://so.eastmoney.com/news/s?keyword={symbol}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     resp = _safe_request(url, headers)
@@ -201,6 +182,8 @@ def fetch_eastmoney(symbol, limit=8):
 
 # ---------- 新浪 ----------
 def fetch_sina(symbol, limit=8):
+    if symbol.isalpha():
+        return pd.DataFrame()
     code = f"sh{symbol}" if symbol.startswith('6') else f"sz{symbol}"
     url = f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllNewsStock/symbol/{code}.phtml"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -282,6 +265,34 @@ def fetch_newsapi_news(symbol, limit=15):
         print(f"NewsAPI 获取失败: {e}")
         return pd.DataFrame()
 
+# ---------- Tushare 资金流向（保留）----------
+def get_moneyflow(symbol, start_date, end_date):
+    """获取个股资金流向（A股）"""
+    pro = ts.pro_api()
+    try:
+        ts_code = convert_code(symbol)
+        if ts_code is None:
+            return pd.DataFrame()
+        df = pro.moneyflow(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        return df if not df.empty else pd.DataFrame()
+    except:
+        return pd.DataFrame()
+
+# ---------- Tushare 概念板块（保留）----------
+def get_concept(symbol):
+    """获取个股所属概念板块（A股）"""
+    pro = ts.pro_api()
+    try:
+        ts_code = convert_code(symbol)
+        if ts_code is None:
+            return []
+        df = pro.concept_detail(ts_code=ts_code)
+        if df is not None and not df.empty:
+            return df['concept_name'].tolist()
+        return []
+    except:
+        return []
+
 # ---------- 翻译工具 ----------
 def translate_text(text, target='zh-CN', timeout=5):
     if not text or not isinstance(text, str) or text.strip() == '':
@@ -302,18 +313,25 @@ def translate_news_dataframe(df):
         df[col] = df[col].apply(lambda x: translate_text(x) if isinstance(x, str) and any(ord(c) < 128 for c in x) else x)
     return df
 
-# ---------- 并发聚合（加入翻译）----------
+# ---------- 并发聚合（按市场筛选源）----------
 def get_all_news_concurrent(symbol, limit_per_source=15, max_total=40):
-    sources = [
-        ('finnhub', fetch_finnhub_news),
-        ('newsapi', fetch_newsapi_news),
-        ('xueqiu', fetch_xueqiu),
-        ('cninfo', fetch_cninfo_announcements),
-        ('eastmoney', fetch_eastmoney),
-        ('sina', fetch_sina)
-    ]
+    if symbol.isalpha():
+        sources = [
+            ('finnhub', fetch_finnhub_news),
+            ('newsapi', fetch_newsapi_news),
+        ]
+    else:
+        sources = [
+            ('tushare', fetch_tushare_news),
+            ('xueqiu', fetch_xueqiu),
+            ('cninfo', fetch_cninfo_announcements),
+            ('eastmoney', fetch_eastmoney),
+            ('sina', fetch_sina),
+            ('newsapi', fetch_newsapi_news),
+        ]
+
     all_news = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=len(sources)) as executor:
         future_map = {executor.submit(func, symbol, limit_per_source): name for name, func in sources}
         for future in as_completed(future_map):
             name = future_map[future]
@@ -329,10 +347,7 @@ def get_all_news_concurrent(symbol, limit_per_source=15, max_total=40):
         return pd.DataFrame()
     combined = pd.concat(all_news, ignore_index=True)
     combined = combined.drop_duplicates(subset=['title'], keep='first')
-
-    # 翻译英文新闻为中文
     combined = translate_news_dataframe(combined)
-
     return combined.head(max_total)
 
 # ---------- 股票名称缓存 ----------
@@ -345,7 +360,10 @@ def get_stock_name(symbol):
             return cache[symbol]
     try:
         pro = ts.pro_api()
-        df = pro.stock_basic(ts_code=convert_code(symbol), fields='name')
+        ts_code = convert_code(symbol)
+        if ts_code is None:
+            return ""
+        df = pro.stock_basic(ts_code=ts_code, fields='name')
         if df is not None and not df.empty:
             name = df.iloc[0]['name']
             cache = {} if not os.path.exists(STOCK_NAME_CACHE) else json.load(open(STOCK_NAME_CACHE))

@@ -138,6 +138,42 @@ def analyze_stock(symbol, stock_name="", model='deepseek', manual_news=""):
         "error": f"所有模型调用失败。最后错误: {last_error}",
         "raw_data": raw_data
     }
+    # 放在 analyze_stock 函数附近
+
+def analyze_stock_at_date(symbol, date):
+    """
+    使用本地数据库中 date 之前的历史新闻，调用 DeepSeek 返回情感得分（0~1）。
+    若无新闻或模型失败，返回 0.5（中性）。
+    """
+    from intelligence.local_db import query_articles
+    from intelligence.llm_gateway import LLMGateway
+    import json
+
+    # 获取该日期之前的新闻（最多50条）
+    news_df = query_articles(symbol, limit=50)
+    if news_df is None or news_df.empty:
+        return 0.5
+
+    # 只保留日期早于分析日的新闻
+    news_df['pub_date'] = pd.to_datetime(news_df['pub_date'])  # 假设有 pub_date 列
+    news_df = news_df[news_df['pub_date'] < pd.to_datetime(date)]
+    if news_df.empty:
+        return 0.5
+
+    # 构建简单 prompt
+    titles = "；".join(news_df['title'].tolist()[:20])
+    prompt = f"""以下是关于股票 {symbol} 在 {date} 之前的历史新闻标题：
+{titles}
+
+请根据这些新闻判断该股票在 {date} 当天的情绪倾向，输出一个 0 到 1 之间的数字，0 表示极度悲观，1 表示极度乐观，0.5 表示中性。只输出数字，不要任何其他文字。"""
+
+    try:
+        gateway = LLMGateway('deepseek')
+        result = gateway.chat([{"role": "user", "content": prompt}], temperature=0.1, max_tokens=10)
+        score = float(result.strip())
+        return max(0.0, min(1.0, score))  # 限制在 0~1
+    except:
+        return 0.5
 
 def _get_moneyflow_text(symbol):
     try:
